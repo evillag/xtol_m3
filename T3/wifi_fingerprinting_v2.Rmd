@@ -1,0 +1,430 @@
+---
+title: 'Task 3: Evaluate Techniques for Wifi Locationing'
+author: "Esteban Villalobos Gomez"
+date: "November $14_{th}$, 2019"
+subtitle: "Deep Analytics and Visualization 2017.3"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  pdf_document:
+    df_print: kable
+    toc: yes
+  html_notebook:
+    highlight: tango
+    theme: simplex
+    toc: yes
+    toc_float: true
+  word_document:
+    toc: yes
+---
+```{r include = FALSE}
+require(neuralnet)
+require(nnet)
+require(ggplot2)
+library(doParallel)
+library(caret)
+library(corrplot)
+library(RColorBrewer)
+```
+
+Data loading into separate dataframes
+```{r}
+LOAD_SAVED_MODELS = TRUE
+
+training <- read.csv('data/trainingData.csv')
+validation <- read.csv('data/validationData.csv')
+```
+Some Descriptive exploration of target variables:
+```{r}
+print(paste("Number of training observations", nrow(training)))
+cat("Number of buildings", length(levels(as.factor(training$BUILDINGID))), "\n")
+cat("Number of Floors", length(levels(as.factor(training$FLOOR))), "\n")
+cat("Number of spaces", length(levels(as.factor(training$SPACEID))), "\n")
+```
+Remove independent variables with zero variance 
+```{r}
+# Add a acolum to identify if the row if from training or validation set
+# since sets weill be merged later
+
+training$isTraining <- TRUE
+validation$isTraining <- FALSE
+consolidado <- rbind(training, validation)
+
+
+training$BUILDINGID <- as.factor(training$BUILDINGID)
+training$FLOOR <- as.factor(training$FLOOR)
+training$SPACEID <- as.factor(training$SPACEID)
+
+validation$BUILDINGID <- as.factor(validation$BUILDINGID)
+validation$FLOOR <- as.factor(validation$FLOOR)
+validation$SPACEID <- as.factor(validation$SPACEID)
+
+# Remove zero variance rows (constant rows) and remove them from both
+# training and validation sets
+zero.var <- logical()
+
+for (i in c(1:ncol(consolidado))) {
+     zero.var[i] <- var(consolidado[,i]) != 0
+}
+
+# Apply a PCA algorithm only on WAP columns, in order to identify which
+# columns could be removed, thus reducing the data set dimensionality
+consolidado.pca <- prcomp(consolidado[, 1:520],
+                          center = TRUE,
+                          scale. = TRUE)
+
+``` 
+Nota that data was transformed to a diferent scale after PCA was executed
+```{r}
+as.data.frame(head(consolidado.pca$x))
+```
+
+The following histogram shows the amount of information (explained variance proportion) from each principal component:
+```{r}
+library(ggplot2)
+
+prop_varianza <- consolidado.pca$sdev^2 / sum(consolidado.pca$sdev^2)
+
+ggplot(data = data.frame(prop_varianza, pc = 1:520),
+       aes(x = pc, y = prop_varianza)) +
+  geom_col(width = 0.3) +
+  scale_y_continuous(limits = c(0,0.01)) +
+  theme_bw() +
+  labs(x = "# of Principal Components",
+       y = "Explained Variance Proportion")
+```
+
+The PCA algorithm will return the Principal components sorted descending based on its importance, I'll select the first 100 principal components for training the classifiers. 
+
+Note that 100 PCs can explain near 60% of the variablity of the dataset:
+```{r}
+# Number of Principal Components to use
+M = 100
+
+# Split into training and validation sets again, after dimensionality was reduced
+training.pca <- data.frame(consolidado.pca$x[consolidado$isTraining, 1:M])
+validation.pca <- data.frame(consolidado.pca$x[!consolidado$isTraining, 1:M])
+
+# Calculate the total variance explained by the selected principal components
+sum(prop_varianza[1:M]) 
+
+#Add other variables that were not WAPs
+training.pca <- cbind(training.pca, training[, 521:529])
+validation.pca <- cbind(validation.pca, validation[, 521:529])
+n <- names(training.pca[,1:M])
+```
+Also note that with 250, around 85% of variability could be explained, but this would add much more complexity to the classifiers training phase:
+```{r}
+sum(prop_varianza[1:250]) 
+```
+
+## Classifiers
+
+With the reduced feature set from PCA, a few models will be trained. First I'll create a classifier for the building variable.
+
+*Parallel execution wrapper for training function*
+```{r}
+fit_model <- function(seed, num_workers=4, ...) {
+  #' Parallel multi-threaded wrapper of the caret's train(...) funtion.
+  #' @param seed used for the random generator
+  #' @param num_workers is the number of worker threads that will be executed in parallel
+  #' @param ... parameters passed directly to the caret's train(...) function
+  #' @return the trained model
+  
+  set.seed(seed)
+  # Register parallel workers
+  cl <- makePSOCKcluster(num_workers)
+  registerDoParallel(cl)
+  fitted_model <- train(...)
+  # Release workers
+  stopCluster(cl)
+  return(fitted_model)
+}
+```
+
+Utility for saving and restoring models
+```{r}
+save_model_to_disk <- function(trained_model, filename="trained_model.rds"){
+  #' save the model to disk
+  saveRDS(trained_model,  paste("models", filename, sep="/"))
+}
+
+load_model_from_disk <- function(filename) {
+  return(readRDS(paste("models", filename, sep="/")))
+}
+
+plot_correlation <- function(dataset) {
+  #' Calculate the correlation among columns in the dataset
+  #' and plot a heat diagram with the results
+  #' @param dataset Data.frame to analyse
+  #' @return correlation data
+  corr_data <- cor(dataset)
+  
+  corrplot(corr_data, type="full", 
+           order = "original",
+           tl.cex = .85, 
+           addCoefasPercent = TRUE,
+           col=brewer.pal(n=8, name="RdYlBu"))
+}
+```
+
+
+Variable independence
+
+The following correlation graph shows that there is little to none correlation between WAPs:
+
+```{r}
+plot_correlation(training.pca[,1:100])
+```
+
+### KNN Model
+
+Train a Knn to predict the Building:
+```{r}
+f <- as.formula(paste("BUILDINGID ~", paste(n, collapse = " + ")))
+model_file = "knn_model1.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+} else {
+  fit_control  <- trainControl(method = "repeatedcv", 
+                               number = 10,
+                               repeats = 3)
+
+  fitted_model <- fit_model(seed = 4561235,
+                       num_workers = 8,
+                       f,
+                       data = training.pca,
+                       method = "knn",
+                       trControl = fit_control,
+                       tuneLength = 5
+                      )
+  
+  save_model_to_disk(fitted_model, filename=model_file) 
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+knn_building_model <- fitted_model
+```
+Test the model:
+```{r}
+# Testing model
+predictions.validation_knn <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.knn <- postResample(predictions.validation_knn, validation.pca$BUILDINGID)
+resamps.knn
+confusionMatrix(data = predictions.validation_knn, validation.pca$BUILDINGID)
+```
+
+Let's predict the Building + the Floor
+
+```{r}
+training.pca$BF <- paste(training.pca$BUILDINGID, training.pca$FLOOR, sep = "|")
+validation.pca$BF <- paste(validation.pca$BUILDINGID, validation.pca$FLOOR, sep = "|")
+training.pca$BF <- as.factor(training.pca$BF)
+validation.pca$BF <- as.factor(validation.pca$BF)
+
+model_file = "knn_model2.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+} else {
+  f <- as.formula(paste("BF ~", paste(n, collapse = " + ")))
+  fit_control  <- trainControl(method = "repeatedcv", 
+                                 number = 10,
+                                 repeats = 3)
+  
+  fitted_model <- fit_model(seed = 9423168,
+                     num_workers = 12,
+                     f,
+                     data = training.pca,
+                     method = "knn",
+                     trControl = fit_control,
+                     tuneLength = 5
+                     )
+  save_model_to_disk(fitted_model, filename = model_file)
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+knn_building_floor_model <- fitted_model
+```
+
+Test the model:
+```{r}
+# Testing model
+predictions.validation_knn2 <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.knn2 <- postResample(predictions.validation_knn2, validation.pca$BF)
+resamps.knn2
+confusionMatrix(data = predictions.validation_knn2, validation.pca$BF)
+```
+
+
+### Random Forest
+```{r}
+f <- as.formula(paste("BUILDINGID ~", paste(n, collapse = " + ")))
+
+## Random Forest
+model_file = "rf_model1.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+} else {
+  fit_control  <- trainControl(method = "repeatedcv", 
+                               number = 10,
+                               repeats = 3)
+  
+  rf_grid <- expand.grid(mtry=c(1,5,7))
+  
+  fitted_model <- fit_model(seed = 9743468,
+                      num_workers = 12,
+                      f,
+                      data = training.pca,
+                      method = "rf",
+                      trControl = fit_control,
+                      tuneGrid=rf_grid
+                     )
+  
+  save_model_to_disk(fitted_model, filename=model_file)
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+rf_building_model <- fitted_model
+```
+
+Validate the model:
+```{r}
+# Testing model
+predictions.validation_rf <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.rf <- postResample(predictions.validation_rf, validation.pca$BUILDINGID)
+resamps.rf
+confusionMatrix(data = predictions.validation_rf, validation.pca$BUILDINGID)
+```
+
+Let's predict the Building + the Floor
+
+```{r}
+model_file = "rf_model2.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+} else {
+  f <- as.formula(paste("BF ~", paste(n, collapse = " + ")))
+  
+  fit_control  <- trainControl(method = "repeatedcv", 
+                               number = 10,
+                               repeats = 3)
+  
+  rf_grid <- expand.grid(mtry=c(1,5,7))
+  
+  fitted_model <- fit_model(seed = 68432542,
+                      num_workers = 12,
+                      f,
+                      data = training.pca,
+                      method = "rf",
+                      trControl = fit_control,
+                      tuneGrid=rf_grid
+                     )
+  save_model_to_disk(fitted_model, filename = model_file)
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+rf_building_floor_model <- fitted_model
+```
+
+Test the model:
+```{r}
+# Testing model
+predictions.validation_rf2 <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.rf2 <- postResample(predictions.validation_rf2, validation.pca$BF)
+resamps.rf2
+confusionMatrix(data = predictions.validation_rf2, validation.pca$BF)
+```
+
+### C5.0 Model
+```{r}
+f <- as.formula(paste("BUILDINGID ~", paste(n, collapse = " + ")))
+
+## C5.0
+model_file = "c50_model1.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+  
+} else {
+  fit_control  <- trainControl(method = "repeatedcv", 
+                               number = 10,
+                               repeats = 3)
+  fitted_model <- fit_model(seed = 9743468,
+                            num_workers = 12,
+                            f,
+                            data = training.pca,
+                            method = "C5.0",
+                            trControl = fit_control,
+                            tuneLength = 15,
+                          )
+  save_model_to_disk(fitted_model, filename=model_file)
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+c50_building_model <- fitted_model
+```
+
+
+```{r}
+# Testing model
+predictions.validation_c50 <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.c50 <- postResample(predictions.validation_c50, validation.pca$BUILDINGID)
+resamps.c50
+confusionMatrix(data = predictions.validation_c50, validation.pca$BUILDINGID)
+```
+Let's predict the Building + the Floor
+
+```{r}
+model_file = "c50_model2.rds"
+
+if(LOAD_SAVED_MODELS) {
+  fitted_model <- load_model_from_disk(model_file)
+} else {
+  f <- as.formula(paste("BF ~", paste(n, collapse = " + ")))
+  
+  fit_control  <- trainControl(method = "repeatedcv", 
+                               number = 10,
+                               repeats = 3)
+  fitted_model <- fit_model(seed = 234654374,
+                            num_workers = 12,
+                            f,
+                            data = training.pca,
+                            method = "C5.0",
+                            trControl = fit_control,
+                            tuneLength = 15,
+                          )
+  save_model_to_disk(fitted_model, filename = model_file)
+}
+summary(fitted_model)
+ggplot(fitted_model) + theme(legend.position = "top")
+c50_building_floor_model <- fitted_model
+```
+
+Test the model:
+```{r}
+# Testing model
+predictions.validation_c502 <- predict(fitted_model, newdata = validation.pca, type="raw")
+resamps.c502 <- postResample(predictions.validation_c502, validation.pca$BF)
+resamps.c502
+confusionMatrix(data = predictions.validation_c502, validation.pca$BF)
+```
+## Models comparison
+
+### Building-only classifiers
+```{r}
+ModelData <- resamples(list(KNN = knn_building_model, RF = rf_building_model, C50 = c50_building_model))
+
+summary(ModelData)
+```
+
+### Building and Floor classifiers
+```{r}
+ModelData <- resamples(list(KNN = knn_building_floor_model, RF = rf_building_floor_model, C50 = c50_building_floor_model))
+
+summary(ModelData)
+```

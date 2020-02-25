@@ -1,0 +1,91 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r include=FALSE}
+library(dplyr)
+library(tidyverse)
+```
+
+
+```{r}
+signals <- read.csv("data/trainingData.csv")
+
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r}
+nrow(signals)
+cat("number of buildings", length(levels(as.factor(signals$BUILDINGID))), "\n")
+cat("number of Floors", length(levels(as.factor(signals$FLOOR))), "\n")
+cat("number of spaces", length(levels(as.factor(signals$SPACEID))), "\n")
+```
+
+Normalize the dataset WAP values to simplify calculations so that the range of values will be betwee [-1,0]
+
+A no signal value of 100, will be converted to -1
+```{r}
+# normalize <- function(x) {
+#   return x/100
+# }
+features <- signals %>% select(1:520)
+
+# centering with 'scale()'
+center_scale <- function(x) {
+    scale(x, scale = TRUE)
+}
+centered_features <- center_scale(features)
+
+covariance_matrix <- cov(centered_features)
+
+# library(corrplot)
+# corrplot(covariance_matrix, method="circle")
+
+#features
+#norm_features <- as.data.frame(lapply(features, normalize))
+#norm_features
+```
+
+```{r}
+# eigen <- eigen(covariance_matrix)
+# t_eigen_vectors <- t(eigen$vectors)
+# t_centered_features <- t(centered_features)
+# pc_scores <- t_eigen_vectors %*% t_centered_features
+# t_pc_scores <- t(pc_scores)
+features <- lapply(features, as.numeric)
+pca <- prcomp(features[], scale. = TRUE)
+```
+
+```{r}
+require(neuralnet)
+require(nnet)
+require(ggplot2)
+
+# Register parallel workers
+library(doParallel)
+cl <- makePSOCKcluster(12)
+
+
+set.seed(6432165)
+```
+
+
+```{r}
+n <- names(features)
+f <- as.formula(paste("BUILDINGID + FLOOR + SPACEID ~", paste(n, collapse = " + ")))
+
+# Register parallel workers
+# registerDoParallel(cl)
+# nn <- neuralnet(f,
+#                 data = signals,
+#                 hidden = c(50, 10, 3),
+#                 act.fct = "logistic",
+#                 linear.output = FALSE,
+#                 lifesign = "minimal",
+#                 threshold = 0.1,
+#                 rep = 500
+#                 )
+# # Release workers
+# stopCluster(cl)
+```

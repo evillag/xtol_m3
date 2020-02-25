@@ -1,0 +1,534 @@
+---
+title: 'Task 2: Visualize and Analyze Energy Data'
+author: "Esteban Villalobos Gómez"
+date: "`r format(Sys.Date(), '%m %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+  html_notebook:
+    code_folding: hide
+subtitle: 'Xtol: Deep Analytics and Visualization 2017.3'
+---
+# The "Individual household electric power consumption" Data Set
+```{r include=FALSE}
+library(RMySQL)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(plotly)
+```
+The dataset contains data from three power sub-meters installed in a house near central France, each measures specific areas of the house:
+
+ - Sub_metering_1: measures a dishwasher, an oven and a microwave
+ - Sub_metering_2: measures the washing-machine, a tumble-drier, a refrigerator and a light
+ - Sub_metering_3: measures a water-heater and an air-conditioner
+```{r include=FALSE}
+con = dbConnect(
+  MySQL(),
+  user = 'deepAnalytics',
+  password = 'Sqltask1234!',
+  dbname = 'dataanalytics2018',
+  host = 'data-analytics-2018.cbrosir2cswx.us-east-1.rds.amazonaws.com'
+)
+
+## List the tables contained in the database
+#dbListTables(con)
+
+## Use asterisk to specify all attributes for download
+power_2007 <- dbGetQuery(con, "SELECT * FROM yr_2007")
+power_2008 <- dbGetQuery(con, "SELECT * FROM yr_2008")
+power_2009 <- dbGetQuery(con, "SELECT * FROM yr_2009")
+```
+
+## Initial Data visualization
+
+The original data set comes with Date and Time columns (both as string), lets convert them into a single field called DateTime:
+```{r}
+# Merge datasets
+power_df <-
+  bind_rows(power_2007, power_2008, power_2009)
+
+# Create DateTime Column
+## Combine Date and Time attribute values in a new attribute column
+power_df <-cbind(power_df,paste(power_df$Date,power_df$Time), stringsAsFactors=FALSE)
+
+## Give the new attribute in the 6th column a header name 
+## NOTE: if you downloaded more than 5 attributes you will need to change the column number)
+# str(power_df)
+colnames(power_df)[11] <-"DateTime"
+# Move the DateTime column to be the first column (for convenience)
+power_df <- power_df[,c(ncol(power_df), 1:(ncol(power_df)-1))]
+power_df
+```
+The DateTime column is still a String, in order to use it's time components needs to be converted into a POSIXct date type.
+```{r}
+## Convert DateTime from character to POSIXct 
+power_df$DateTime <- as.POSIXct(power_df$DateTime, tz="Europe/Paris", format="%Y-%m-%d %H:%M:%S")
+## Add the time zone
+attr(power_df$DateTime, "tzone") <- "Europe/Paris"
+power_df
+```
+
+Now, it's possible to decompose the DateTime field into separate components for further analysis later on.
+```{r}
+## Create "year" attribute with lubridate
+power_df$year <- year(power_df$DateTime)
+power_df$quarter <- quarter(power_df$DateTime)
+power_df$month <- month(power_df$DateTime)
+power_df$week <- week(power_df$DateTime)
+power_df$weekday <- wday(power_df$DateTime, week_start=1)
+power_df$day <- day(power_df$DateTime)
+power_df$hour <- hour(power_df$DateTime)
+power_df$minute <- minute(power_df$DateTime)
+
+power_df
+```
+
+Let's try to visualize a single week:
+```{r}
+## Subset the second week of 2008 - All Observations
+houseWeek <- filter(power_df, year == 2008 & week == 2)
+## Plot subset houseWeek
+plot(houseWeek$Sub_metering_1)
+```
+
+There are too many data points displayed, therefore is difficult to infer anything from it, let's zoom in into a single day:
+```{r}
+# Visualize a Single Day with Plotly
+## Subset the 9th day of January 2008 - All observations
+houseDay <- filter(power_df, year == 2008 & month == 1 & day == 9)
+## Plot sub-meter 1
+plot_ly(houseDay, x = ~houseDay$Time, y = ~houseDay$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ layout(title = "Power Consumption January 9Th, 2008",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+
+```
+The visualization is better, so let's add the three sub-meters to the graph:
+```{r}
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - All observations 
+plot_ly(houseDay, x = ~houseDay$DateTime, y = ~houseDay$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseDay$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ add_trace(y = ~houseDay$Sub_metering_3, name = 'Water Heater & AC', mode = 'lines') %>%
+ layout(title = "Power Consumption January 9Th, 2008",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+```
+We can reduce the granularity from *one observation per minute* to *one observation every 10 minutes* to get a better plot, this will be called a **Day** visualization:
+```{r}
+## Subset the 9th day of January 2008 - 10 Minute frequency
+houseDay10 <- filter(power_df, year == 2008 & month == 1 & day == 9 & (minute == 0 | minute == 10 | minute == 20 | minute == 30 | minute == 40 | minute == 50))
+
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - 10 Minute frequency
+plot_ly(houseDay10, x = ~houseDay10$DateTime, y = ~houseDay10$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseDay10$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ add_trace(y = ~houseDay10$Sub_metering_3, name = 'Water Heater & AC', mode = 'lines') %>%
+ layout(title = "Power Consumption January 9Th, 2008",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+```
+Now let's look at another time period: the 3rd week of April 2009 - 10 Minute frequency
+```{r}
+## Subset the 3rd week of April 2009 - 10 Minute frequency
+houseWeek16 <- power_df %>%
+  filter(year == 2009 & month == 4 & week == 16 & (minute == 0 | minute == 10 | minute == 20 | minute == 30 | minute == 40 | minute == 50))
+
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - 10 Minute frequency
+plot_ly(houseWeek16, x = ~houseWeek16$DateTime, y = ~houseWeek16$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_3, name = 'Water Heater & AC', mode = 'lines') %>%
+ layout(title = "Power Consumption April 16Th-22Nd, 2009",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+
+```
+Too many samples, let's reduce them to one per hour:
+```{r}
+## Subset the 3rd week of April 2009 - 60 Minute frequency
+houseWeek16 <- power_df %>%
+  filter(year == 2009 & month == 4 & week == 16 & (minute == 0))
+
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - 60 Minute frequency
+plot_ly(houseWeek16, x = ~houseWeek16$DateTime, y = ~houseWeek16$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_3, name = 'Water Heater & AC', mode = 'lines') %>%
+ layout(title = "Power Consumption April 16Th-22Nd, 2009",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+```
+**Leason:** Depending on the minute we choose, we will see or not some important data points, like the high peaks consumption instants (over 70 watt/hour) shown in the 10 min frequency graph, that are gone in the 60 minutes graph above.
+
+Moving on, let's see a month worth of data, with measurements every 6 hours, choosing an arbitrary minute.
+```{r}
+## Subset April 2009 - 6 hour frequency
+houseWeek16 <- power_df %>%
+  filter(year == 2009 & month == 4 & (hour == 0 | hour == 6 | hour == 12 | hour == 18) & (minute == 23))
+
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - 3 hour frequency
+plot_ly(houseWeek16, x = ~houseWeek16$DateTime, y = ~houseWeek16$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_3, name = 'Water Heater & AC', mode = 'lines') %>%
+ layout(title = "Power Consumption for April, 2009",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+```
+The Water Heater & AC seem to introduce a lot of noise, let's see only the kitchen and Laundry Room
+
+This way we can tell how many types a week the is someone cooking and/or doing laundry in a month:
+
+```{r}
+## Subset the 3rd-4th weeks of April 2009 - 6 hour frequency
+houseWeek16 <- power_df %>%
+  filter(year == 2009 & month == 4 & (hour == 0 | hour == 6 | hour == 12 | hour == 18) & (minute == 23))
+
+## Plot sub-meter 1, 2 and 3 with title, legend and labels - 3 hour frequency
+plot_ly(houseWeek16, x = ~houseWeek16$DateTime, y = ~houseWeek16$Sub_metering_1, name = 'Kitchen', type = 'scatter', mode = 'lines') %>%
+ add_trace(y = ~houseWeek16$Sub_metering_2, name = 'Laundry Room', mode = 'lines') %>%
+ layout(title = "Power Consumption April, 2009, samples every 6 hours",
+ xaxis = list(title = "Time"),
+ yaxis = list (title = "Power (watt-hours)"))
+```
+
+
+## Data preparation
+
+Let's take a sample of one observation per week: on Mondays at 8:00pm for 2007, 2008 and 2009, and plot a time series for each sub-meter.
+```{r}
+## Subset to one observation per week on Mondays at 8:00pm for 2007, 2008 and 2009
+house070809weekly <- filter(power_df, weekday == 2 & hour == 20 & minute == 1)
+```
+
+
+### Plot of Sub-meter 3 (Water Heater & AC) time series
+
+```{r}
+## Create TS object with SubMeter3
+tsSM3_070809weekly <- ts(house070809weekly$Sub_metering_3, frequency=52, start=c(2007,1))
+
+## Plot sub-meter 3 with autoplot (you may need to install these packages)
+library(ggplot2)
+library(ggfortify)
+
+## Plot sub-meter 3 with autoplot - add labels, color
+autoplot(tsSM3_070809weekly, colour = 'green', xlab = "Time", ylab = "Watt Hours", main = "Water Heater & AC", lwd=1)
+```
+
+
+### Plot of Sub-meter 1 (Kitchen) time series
+
+```{r}
+## Create TS object with SubMeter1
+tsSM1_070809weekly <- ts(house070809weekly$Sub_metering_1, frequency=52, start=c(2007,1))
+
+## Plot sub-meter 1 with autoplot - add labels, color
+autoplot(tsSM1_070809weekly, colour = 'blue', xlab = "Time", ylab = "Watt Hours", main = "Kitchen", lwd=1)
+```
+
+
+### Plot of Sub-meter 2 (Laundry Room) time series
+
+```{r}
+## Create TS object with SubMeter1
+tsSM2_070809weekly <- ts(house070809weekly$Sub_metering_2, frequency=52, start=c(2007,1))
+
+## Plot sub-meter 1 with autoplot - add labels, color
+autoplot(tsSM2_070809weekly, colour = 'orange', xlab = "Time", ylab = "Watt Hours", main = "Laundry Room", lwd=1)
+```
+
+### Forecasting TS
+
+Now with the available data, we'll try to forecast the power consumption for each sub-meter, using a linear regression model first.
+
+#### Linear model for sub-meter 3:
+
+```{r}
+## Apply time series linear regression to the sub-meter 3 ts object and use summary to obtain R2 and RMSE from the model you built
+library(forecast)
+fitSM3 <- tslm(tsSM3_070809weekly ~ trend + season) 
+summary(fitSM3)
+```
+
+Now lets create and plot a forecast for sub-meter 3. 
+```{r}
+## Create the forecast for sub-meter 3. Forecast ahead 20 time periods 
+forecastfitSM3 <- forecast(fitSM3, h=20)
+## Plot the forecast for sub-meter 3. 
+autoplot(forecastfitSM3, xlab = "Year", ylab = "Watt Hours", main = "Water Heater & AC forecast")
+```
+
+
+The graph shows a few things to note:
+ - The levels of confidence: 80% and 95% (showing the range at which there is an 85% or 95% probability that the forecasted value will fall into).
+ - The levels of confidence shadow show negative values. This is because the confidence level shows a range of acceptance which is equidistant to an edge value greater than, and another one lower than 0.
+ - Note that no forecasted values are below 0. 
+
+To correct this situation (of negative values), we can chance the limits of the plot, also we will update the confidence levels:
+
+```{r}
+## Create sub-meter 3 forecast with confidence levels 80 and 90
+forecastfitSM3c <- forecast(fitSM3, h=20, level=c(80,90))
+
+## Plot sub-meter 3 forecast, limit y and add labels
+plot(forecastfitSM3c, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time", main = "Water Heater & AC Forecast")
+```
+
+Now let's forecast the other two sub-meters.
+
+#### Linear model for sub-meter 2:
+```{r}
+## Apply time series linear regression to the sub-meter 2 ts object and use summary to obtain R2 and RMSE from the model you built
+fitSM2 <- tslm(tsSM2_070809weekly ~ trend + season) 
+summary(fitSM2)
+```
+
+Forecast plot for sub-meter 2:
+
+```{r}
+## Create sub-meter 2 forecast with confidence levels 80 and 90
+forecastfitSM2c <- forecast(fitSM2, h=20, level=c(80,90))
+
+## Plot sub-meter 2 forecast, limit y and add labels
+plot(forecastfitSM2c, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time", main = "Laundry Room Forecast")
+```
+
+#### Linear model for sub-meter 1:
+
+```{r}
+## Apply time series linear regression to the sub-meter 2 ts object and use summary to obtain R2 and RMSE from the model you built
+fitSM1 <- tslm(tsSM1_070809weekly ~ trend + season) 
+summary(fitSM1)
+```
+
+
+Forecast plot for sub-meter 1:
+```{r}
+## Create sub-meter 1 forecast with confidence levels 80 and 90
+forecastfitSM1c <- forecast(fitSM1, h=20, level=c(80,90))
+
+## Plot sub-meter 1 forecast, limit y and add labels
+plot(forecastfitSM1c, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time", main = "Kitchen Forecast")
+```
+
+```{r}
+plotForecastErrors <- function(forecasterrors)
+{
+  # make a histogram of the forecast errors:
+  mybinsize <- IQR(forecasterrors)/4
+  mysd <- sd(forecasterrors)
+  mymin <- min(forecasterrors) - mysd*5
+  mymax <- max(forecasterrors) + mysd*3
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  mynorm <- rnorm(10000, mean=0, sd=mysd)
+  mymin2 <- min(mynorm)
+  mymax2 <- max(mynorm)
+  if (mymin2 < mymin) { mymin <- mymin2 }
+  if (mymax2 > mymax) { mymax <- mymax2 }
+  # make a red histogram of the forecast errors, with the normally distributed data overlaid:
+  mybins <- seq(mymin, mymax, mybinsize)
+  hist(forecasterrors, col="red", freq=FALSE, breaks=mybins)
+  # freq=FALSE ensures the area under the histogram = 1
+  # generate normally distributed data with mean 0 and standard deviation mysd
+  myhist <- hist(mynorm, plot=FALSE, breaks=mybins)
+  # plot the normal curve as a blue line on top of the histogram of forecast errors:
+  print(points(myhist$mids, myhist$density, type="l", col="blue", lwd=2))
+}
+```
+
+### Performance review
+
+All three models perform similarly.
+
+#### Linear models $RSME$ and $R^2$ (residuals) comparison:
+```{r}
+rsme_list <- c(9.568, 7.403, 8.122)
+rsquared_list <- c(0.3375, 0.3006, 0.3544)
+model_comparison <- data.frame(rsme_list, rsquared_list)
+colnames(model_comparison) <- c("RSME", "RSquared")
+rownames(model_comparison) <- c("Kitchen Prediction", "Laundry Room Forecast Prediction", "Water Heater & AC Prediction")
+model_comparison
+```
+
+Also it seems model's forecast errors do not follow a normal distribution, with center in 0, which indicates the models could be improved further more.
+
+#### Forecast error residuals plot for sub-meter 1
+```{r, results = 'hide'}
+plotForecastErrors(forecastfitSM1c$residuals) # make a histogram
+```
+
+#### Forecast error residuals plot for sub-meter 2
+```{r, results = 'hide'}
+plotForecastErrors(forecastfitSM2c$residuals) # make a histogram
+```
+
+#### Forecast error residuals plot for sub-meter 3
+```{r, results = 'hide'}
+plotForecastErrors(forecastfitSM3c$residuals) # make a histogram
+```
+
+
+## Seasonal adjustment
+
+### Time series decomposition of sub-meter 1
+```{r}
+## Decompose Sub-meter 1 into trend, seasonal and remainder
+components070809SM1weekly <- decompose(tsSM1_070809weekly)
+## Plot decomposed sub-meter 1 
+autoplot(components070809SM1weekly, main="Kitchen decomposition of additive time series")
+```
+
+```{r}
+## Check summary statistics for decomposed sub-meter 1
+print("Seasonal")
+summary(components070809SM1weekly$seasonal)
+print("Trend")
+summary(components070809SM1weekly$trend)
+print("Random")
+summary(components070809SM1weekly$random)
+```
+
+### Time series decomposition of sub-meter 2
+```{r}
+## Decompose Sub-meter 2 into trend, seasonal and remainder
+components070809SM2weekly <- decompose(tsSM2_070809weekly)
+## Plot decomposed sub-meter 2 
+autoplot(components070809SM2weekly, main="Laundry Room decomposition of additive time series")
+```
+
+```{r}
+## Check summary statistics for decomposed sub-meter 2
+print("Seasonal")
+summary(components070809SM2weekly$seasonal)
+print("Trend")
+summary(components070809SM2weekly$trend)
+print("Random")
+summary(components070809SM2weekly$random)
+```
+
+### Time series decomposition of sub-meter 3
+```{r}
+## Decompose Sub-meter 3 into trend, seasonal and remainder
+components070809SM3weekly <- decompose(tsSM3_070809weekly)
+## Plot decomposed sub-meter 3 
+autoplot(components070809SM3weekly, main = "Water Heater & AC Forecast decomposition of additive time series")
+```
+
+```{r}
+## Check summary statistics for decomposed sub-meter 3 
+print("Seasonal")
+summary(components070809SM3weekly$seasonal)
+print("Trend")
+summary(components070809SM3weekly$trend)
+print("Random")
+summary(components070809SM3weekly$random)
+```
+
+
+## Holt-Winters Forecasting
+
+### Sub-meter 3 Holt-Winters Forecasting:
+
+```{r}
+## Seasonal adjusting sub-meter 3 by subtracting the seasonal component & plot
+tsSM3_070809Adjusted <- tsSM3_070809weekly - components070809SM3weekly$seasonal
+autoplot(tsSM3_070809Adjusted, main = "Water Heater & AC Forecast Holt-Winters Forecasting")
+```
+
+```{r}
+## Test Seasonal Adjustment by running Decompose again. Note the very, very small scale for Seasonal
+autoplot(decompose(tsSM3_070809Adjusted), main = "Adjusted Water Heater & AC decomposition of additive time series")
+```
+
+**"Yes there is a seasonal line, but look at the scale for the seasonal section. -1e-15 through 5e-16. That's a decimal with 15 zeros before 1. A very very small number indeed. For all practical purposes the seasonality has been removed."**
+
+
+#### HoltWinters Simple Exponential Smoothing
+```{r}
+## Holt Winters Exponential Smoothing & Plot
+tsSM3_HW070809 <- HoltWinters(tsSM3_070809Adjusted, beta=FALSE, gamma=FALSE)
+plot(tsSM3_HW070809, ylim = c(0, 25), main="Water Heater & AC Holt-Winters filtering")
+```
+
+Perform a new forecast on the data w/o seasonal data:
+```{r}
+## HoltWinters forecast & plot
+tsSM3_HW070809for <- forecast(tsSM3_HW070809, h=25)
+plot(tsSM3_HW070809for, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time - Water Heather and AC", main="Water Heater & AC Forecasts from Holt-Winters")
+```
+
+```{r}
+## Forecast HoltWinters with diminished confidence levels
+tsSM3_HW070809forC <- forecast(tsSM3_HW070809, h=25, level=c(10,25))
+## Plot only the forecasted area
+plot(tsSM3_HW070809forC, ylim = c(0, 9), ylab= "Watt-Hours", xlab="Time - Water Heather and AC", start(2010), main = "Water Heater & AC Holt-Winters forecasts")
+```
+### TODO: how is this plot different from the forecasted plot from step three of the plan of attack? Which, if any, is more useful? 
+
+
+### Sub-meter 2 Holt-Winters Forecasting:
+
+```{r}
+## Seasonal adjusting sub-meter 2 by subtracting the seasonal component & plot
+tsSM2_070809Adjusted <- tsSM2_070809weekly - components070809SM2weekly$seasonal
+autoplot(tsSM2_070809Adjusted, main = "Laundry Room Holt-Winters Forecasting")
+```
+
+```{r}
+## Test Seasonal Adjustment by running Decompose again. Note the very, very small scale for Seasonal
+autoplot(decompose(tsSM2_070809Adjusted), main = "Adjusted Laundry Room decomposition of additive time series")
+```
+
+#### HoltWinters Simple Exponential Smoothing
+```{r}
+## Holt Winters Exponential Smoothing & Plot
+tsSM2_HW070809 <- HoltWinters(tsSM2_070809Adjusted, beta=FALSE, gamma=FALSE)
+plot(tsSM2_HW070809, ylim = c(0, 25), main = "Laundry Room Holt-Winters filtering")
+```
+
+Perform a new forecast on the data w/o seasonal data:
+```{r}
+## HoltWinters forecast & plot
+tsSM2_HW070809for <- forecast(tsSM2_HW070809, h=25)
+plot(tsSM2_HW070809for, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time", main = "Laundry Room forecasts from Holt-Winters")
+```
+
+```{r}
+## Forecast HoltWinters with diminished confidence levels
+tsSM2_HW070809forC <- forecast(tsSM2_HW070809, h=25, level=c(10,25))
+## Plot only the forecasted area
+plot(tsSM2_HW070809forC, ylim = c(0, 5), ylab= "Watt-Hours", xlab="Time", start(2010), main = "Laundry Room Holt-Winters forecasts")
+```
+
+### Sub-meter 1 Holt-Winters Forecasting:
+
+```{r}
+## Seasonal adjusting sub-meter 1 by subtracting the seasonal component & plot
+tsSM1_070809Adjusted <- tsSM1_070809weekly - components070809SM1weekly$seasonal
+autoplot(tsSM1_070809Adjusted, main = "Kitchen Holt-Winters Forecasting")
+```
+
+```{r}
+## Test Seasonal Adjustment by running Decompose again. Note the very, very small scale for Seasonal
+autoplot(decompose(tsSM1_070809Adjusted), main = "Adjusted Kitchen decomposition of additive time series ")
+```
+
+#### HoltWinters Simple Exponential Smoothing
+```{r}
+## Holt Winters Exponential Smoothing & Plot
+tsSM1_HW070809 <- HoltWinters(tsSM1_070809Adjusted, beta=FALSE, gamma=FALSE)
+plot(tsSM1_HW070809, ylim = c(0, 25), main = "Kitchen Holt-Winters filtering")
+```
+
+Perform a new forecast on the data w/o seasonal data:
+```{r}
+## HoltWinters forecast & plot
+tsSM1_HW070809for <- forecast(tsSM1_HW070809, h=25)
+plot(tsSM1_HW070809for, ylim = c(0, 20), ylab= "Watt-Hours", xlab="Time", main = "Kitchen Holt-Winters Forecasts")
+```
+
+```{r}
+## Forecast HoltWinters with diminished confidence levels
+tsSM1_HW070809forC <- forecast(tsSM1_HW070809, h=25, level=c(10,25))
+## Plot only the forecasted area
+plot(tsSM1_HW070809forC, ylim = c(0, 5), ylab= "Watt-Hours", xlab="Time", start(2010), main = "Kitchen Holt-Winters Forecasts")
+```
+
